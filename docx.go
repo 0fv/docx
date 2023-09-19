@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"io/ioutil"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -79,6 +80,7 @@ type Docx struct {
 	headers map[string]string
 	footers map[string]string
 	images  map[string]string
+	addIndx int32
 }
 
 func (d *Docx) GetContent() string {
@@ -175,6 +177,38 @@ func (d *Docx) Write(ioWriter io.Writer) (err error) {
 	}
 	w.Close()
 	return
+}
+
+func (d *Docx) AddPic(dir string)error {
+	d.addIndx++
+	idIndx:= strconv.Itoa(int(d.addIndx))
+	fileName :=d.fileName(dir)
+	imgName := "cimage"+idIndx+d.fileSuffix(fileName)
+	sb := strings.Builder{}
+	sb.WriteString(`<Relationship Id="crId`)
+	sb.WriteString(idIndx)
+	sb.WriteString(`" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/`)
+	sb.WriteString(imgName)
+	sb.WriteString(`"/>`)
+	filestream,err:= os.Open(dir)
+	if err != nil{
+
+	}
+	d.files = append(d.files, zip.File)
+
+}
+
+func (d *Docx) fileName(dir string) string {
+	list := strings.Split(dir, string(os.PathSeparator))
+	return list[len(list)-1]
+}
+
+func (d *Docx)fileSuffix(file string)string{
+	list := strings.Split(file, ".")
+	if len(list) > 1{
+		return "."+list[len(list)-1]
+	}
+	return ""
 }
 
 func replaceHeaderFooter(headerFooter map[string]string, oldString string, newString string) (err error) {
