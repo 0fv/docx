@@ -11,17 +11,18 @@ import (
 	"io/fs"
 	"io/ioutil"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
-//Contains functions to work with data from a zip file
+// Contains functions to work with data from a zip file
 type ZipData interface {
 	files() []*zip.File
 	close() error
 }
 
-//Type for in memory zip files
+// Type for in memory zip files
 type ZipInMemory struct {
 	data *zip.Reader
 }
@@ -30,13 +31,13 @@ func (d ZipInMemory) files() []*zip.File {
 	return d.data.File
 }
 
-//Since there is nothing to close for in memory, just nil the data and return nil
+// Since there is nothing to close for in memory, just nil the data and return nil
 func (d ZipInMemory) close() error {
 	d.data = nil
 	return nil
 }
 
-//Type for zip files read from disk
+// Type for zip files read from disk
 type ZipFile struct {
 	data *zip.ReadCloser
 }
@@ -56,16 +57,21 @@ type ReplaceDocx struct {
 	headers   map[string]string
 	footers   map[string]string
 	images    map[string]string
+	imgIndex  int32
+	refIndex  int32
 }
 
 func (r *ReplaceDocx) Editable() *Docx {
 	return &Docx{
-		files:   r.zipReader.files(),
-		content: r.content,
-		links:   r.links,
-		headers: r.headers,
-		footers: r.footers,
-		images:  r.images,
+		files:      r.zipReader.files(),
+		content:    r.content,
+		links:      r.links,
+		headers:    r.headers,
+		footers:    r.footers,
+		images:     r.images,
+		appendFile: make(map[string][]byte),
+		imgIndex:   r.imgIndex,
+		refIndex:   r.refIndex,
 	}
 }
 
@@ -74,13 +80,15 @@ func (r *ReplaceDocx) Close() error {
 }
 
 type Docx struct {
-	files   []*zip.File
-	content string
-	links   string
-	headers map[string]string
-	footers map[string]string
-	images  map[string]string
-	addIndx int32
+	files      []*zip.File
+	content    string
+	links      string
+	headers    map[string]string
+	footers    map[string]string
+	images     map[string]string
+	imgIndex   int32
+	refIndex   int32
+	appendFile map[string][]byte
 }
 
 func (d *Docx) GetContent() string {
@@ -144,6 +152,7 @@ func (d *Docx) WriteToFile(path string) (err error) {
 
 func (d *Docx) Write(ioWriter io.Writer) (err error) {
 	w := zip.NewWriter(ioWriter)
+	defer w.Close()
 	for _, file := range d.files {
 		var writer io.Writer
 		var readCloser io.ReadCloser
@@ -175,27 +184,59 @@ func (d *Docx) Write(ioWriter io.Writer) (err error) {
 			writer.Write(streamToByte(readCloser))
 		}
 	}
-	w.Close()
+	for fileName, appendFile := range d.appendFile {
+		writer, err := w.Create(fileName)
+		if err != nil {
+			return err
+		}
+		writer.Write([]byte(appendFile))
+	}
 	return
 }
 
-func (d *Docx) AddPic(dir string)error {
-	d.addIndx++
-	idIndx:= strconv.Itoa(int(d.addIndx))
-	fileName :=d.fileName(dir)
-	imgName := "cimage"+idIndx+d.fileSuffix(fileName)
+func (d *Docx) AddPic(dir string) (string, string, error) {
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return "", "", err
+	}
+	file, err := ioutil.ReadFile(dir)
+	if err != nil {
+		return "", "", err
+	}
+	d.imgIndex++
+	d.refIndex++
+	idIndx := strconv.Itoa(int(d.imgIndex))
+	refIndx := strconv.Itoa(int(d.refIndex))
+	fileName := d.fileName(dir)
+	imgName := "image" + idIndx + d.fileSuffix(fileName)
+	id := "rId" + refIndx
 	sb := strings.Builder{}
-	sb.WriteString(`<Relationship Id="crId`)
+	sb.WriteString(`<Relationship Id="rId`)
 	sb.WriteString(idIndx)
 	sb.WriteString(`" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/`)
 	sb.WriteString(imgName)
 	sb.WriteString(`"/>`)
-	filestream,err:= os.Open(dir)
-	if err != nil{
+	d.links += sb.String()
+	d.appendFile["word/media/"+imgName] = file
+	return refIndx, id, err
+}
 
-	}
-	d.files = append(d.files, zip.File)
+func (d *Docx) AddPicStream(buf []byte, suffix string) (string, string) {
+	d.imgIndex++
+	d.refIndex++
+	idIndx := strconv.Itoa(int(d.imgIndex))
+	refIndx := strconv.Itoa(int(d.refIndex))
+	imgName := "image" + idIndx + suffix
+	id := "rId" + refIndx
 
+	sb := strings.Builder{}
+	sb.WriteString(`<Relationship Id="rId`)
+	sb.WriteString(refIndx)
+	sb.WriteString(`" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/`)
+	sb.WriteString(imgName)
+	sb.WriteString(`"/></Relationships>`)
+	d.links = strings.Replace(d.links, "</Relationships>", sb.String(), 1)
+	d.appendFile["word/media/"+imgName] = buf
+	return refIndx, id
 }
 
 func (d *Docx) fileName(dir string) string {
@@ -203,10 +244,10 @@ func (d *Docx) fileName(dir string) string {
 	return list[len(list)-1]
 }
 
-func (d *Docx)fileSuffix(file string)string{
+func (d *Docx) fileSuffix(file string) string {
 	list := strings.Split(file, ".")
-	if len(list) > 1{
-		return "."+list[len(list)-1]
+	if len(list) > 1 {
+		return "." + list[len(list)-1]
 	}
 	return ""
 }
@@ -228,7 +269,7 @@ func replaceHeaderFooter(headerFooter map[string]string, oldString string, newSt
 	return nil
 }
 
-//ReadDocxFromFS opens a docx file from the file system
+// ReadDocxFromFS opens a docx file from the file system
 func ReadDocxFromFS(file string, fs fs.FS) (*ReplaceDocx, error) {
 	f, err := fs.Open(file)
 	if err != nil {
@@ -267,14 +308,14 @@ func ReadDocx(reader ZipData) (*ReplaceDocx, error) {
 		return nil, err
 	}
 
-	links, err := readLinks(reader.files())
+	refid, imgid, links, err := readLinks(reader.files())
 	if err != nil {
 		return nil, err
 	}
 
 	headers, footers, _ := readHeaderFooter(reader.files())
 	images, _ := retrieveImageFilenames(reader.files())
-	return &ReplaceDocx{zipReader: reader, content: content, links: links, headers: headers, footers: footers, images: images}, nil
+	return &ReplaceDocx{zipReader: reader, content: content, links: links, headers: headers, footers: footers, images: images, imgIndex: int32(imgid), refIndex: int32(refid)}, nil
 }
 
 func retrieveImageFilenames(files []*zip.File) (map[string]string, error) {
@@ -344,19 +385,42 @@ func readText(files []*zip.File) (text string, err error) {
 	return
 }
 
-func readLinks(files []*zip.File) (text string, err error) {
+var imgReg = regexp.MustCompile(`"media/image\d+`)
+var refReg = regexp.MustCompile(`"rId\d+`)
+
+func readLinks(files []*zip.File) (refid, imgid int, text string, err error) {
 	var documentFile *zip.File
 	documentFile, err = retrieveLinkDoc(files)
 	if err != nil {
-		return text, err
+		return
 	}
 	var documentReader io.ReadCloser
 	documentReader, err = documentFile.Open()
 	if err != nil {
-		return text, err
+		return
 	}
 
 	text, err = wordDocToString(documentReader)
+	for _, v := range imgReg.FindAllString(text, -1) {
+		id := strings.TrimPrefix(v, `"media/image`)
+		mid, err := strconv.Atoi(id)
+		if err != nil {
+			continue
+		}
+		if mid > imgid {
+			imgid = mid
+		}
+	}
+	for _, v := range refReg.FindAllString(text, -1) {
+		id := strings.TrimPrefix(v, `"rId`)
+		mid, err := strconv.Atoi(id)
+		if err != nil {
+			continue
+		}
+		if mid > refid {
+			refid = mid
+		}
+	}
 	return
 }
 
@@ -365,7 +429,9 @@ func wordDocToString(reader io.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	data := string(b)
+
+	return data, nil
 }
 
 func retrieveWordDoc(files []*zip.File) (file *zip.File, err error) {
