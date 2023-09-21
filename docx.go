@@ -103,6 +103,19 @@ func (d *Docx) ReplaceRaw(oldString string, newString string, num int) {
 	d.content = strings.Replace(d.content, oldString, newString, num)
 }
 
+func (d *Docx) ReplaceTagContains(oldTag string, oldstring string, newString string) error {
+	reg, err := regexp.Compile(`<` + oldTag + `>.*?</\` + oldTag + ">")
+	if err != nil {
+		return err
+	}
+	for _, content := range reg.FindAllString(d.content, -1) {
+		if strings.Contains(content, oldstring) {
+			d.content = strings.Replace(d.content, content, newString, 1)
+		}
+	}
+	return nil
+}
+
 func (d *Docx) Replace(oldString string, newString string, num int) (err error) {
 	oldString, err = encode(oldString)
 	if err != nil {
