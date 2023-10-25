@@ -116,6 +116,16 @@ func (d *Docx) ReplaceTagContains(oldTag string, oldstring string, newString str
 	return nil
 }
 
+func (d *Docx) ReplaceStartEnd(start, end string, new string, num int) {
+	indexstart := strings.Index(d.content, start)
+	indexend := strings.Index(d.content, end)
+	if indexend == -1 || indexstart == -1 {
+		return
+	}
+	indexend += len(end)
+	d.content = strings.Replace(d.content, d.content[indexstart:indexend], new, num)
+}
+
 func (d *Docx) Replace(oldString string, newString string, num int) (err error) {
 	oldString, err = encode(oldString)
 	if err != nil {
